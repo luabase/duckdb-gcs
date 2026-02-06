@@ -4,7 +4,7 @@ This document describes how to create a new release of the DuckDB GCS extension.
 
 ## Automatic Release (Recommended)
 
-The easiest way to create a release is using GitHub Actions:
+The easiest way to create a release is using GitHub's release interface, which triggers the automated build:
 
 ### 1. Prepare the Release
 
@@ -22,15 +22,24 @@ git commit -m "Prepare for release v1.0.0"
 git push origin main
 ```
 
-### 2. Create and Push a Tag
+### 2. Create a GitHub Release
 
-```bash
-# Create an annotated tag with the version
-git tag -a v1.0.0 -m "Release v1.0.0"
+1. **Go to your repository's releases page:**
+   ```
+   https://github.com/northpolesec/duckdb-gcs/releases
+   ```
 
-# Push the tag to GitHub
-git push origin v1.0.0
-```
+2. **Click "Draft a new release"**
+
+3. **Fill in the release details:**
+   - **Tag**: Create a new tag (e.g., `v1.0.0`)
+   - **Target**: `main` branch
+   - **Release title**: `v1.0.0` or `DuckDB GCS Extension v1.0.0`
+   - **Description**: Add release notes, what's new, etc.
+
+4. **Publish the release**
+   - Click "Publish release" (not "Save draft")
+   - This triggers the GitHub Actions workflow
 
 ### 3. Wait for GitHub Actions
 
@@ -41,7 +50,6 @@ The workflow will automatically:
   - macOS Intel (AMD64)
   - macOS Apple Silicon (ARM64)
 - Run tests on each platform
-- Create a GitHub Release with the tag
 - Upload all binaries to the release
 
 You can monitor progress at:
@@ -69,13 +77,15 @@ SELECT * FROM read_parquet('gs://your-test-bucket/test.parquet') LIMIT 1;
 
 ## Manual Trigger
 
-You can also manually trigger a release build:
+You can also manually trigger a release build for an existing release:
 
 1. Go to https://github.com/northpolesec/duckdb-gcs/actions
 2. Select "Release Extension" workflow
 3. Click "Run workflow"
 4. Enter the version tag (e.g., `v1.0.0`)
 5. Click "Run workflow"
+
+This is useful if the initial build failed or you need to rebuild for any reason.
 
 ## Versioning
 

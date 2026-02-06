@@ -1,12 +1,11 @@
 #
 # This workflow builds extension binaries and uploads them to GitHub Releases
-# when a version tag is pushed (e.g., v1.0.0)
+# when a new release is created
 #
 name: Release Extension
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  release:
+    types: [created]
   workflow_dispatch:
     inputs:
       version:
@@ -25,66 +24,41 @@ jobs:
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;windows_amd64'
 
   create-release:
-    name: Create GitHub Release
+    name: Get Release Info
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      upload_url: ${{ steps.get_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
     steps:
-      - name: Get version from tag
+      - name: Get version from release
         id: get_version
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.version }}"
           else
-            VERSION="${GITHUB_REF#refs/tags/}"
+            # Get version from the release tag
+            VERSION="${{ github.event.release.tag_name }}"
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Version: $VERSION"
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ steps.get_version.outputs.version }}
-          release_name: DuckDB GCS Extension ${{ steps.get_version.outputs.version }}
-          body: |
-            DuckDB GCS Extension ${{ steps.get_version.outputs.version }}
-
-            This release contains pre-built binaries for DuckDB v1.4.2.
-
-            ## Installation
-
-            Install directly from this release:
-
-            ```sql
-            INSTALL gcs FROM 'https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}';
-            LOAD gcs;
-            ```
-
-            Or download manually and load:
-
-            ```sql
-            LOAD './gcs.duckdb_extension';
-            ```
-
-            ## Supported Platforms
-
-            - Linux AMD64
-            - Linux ARM64
-            - macOS Intel (AMD64)
-            - macOS Apple Silicon (ARM64)
-
-            ## What's Changed
-
-            See the commit history for details.
-          draft: false
-          prerelease: false
+      - name: Get release upload URL
+        id: get_release
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # For manual dispatch, fetch the release by tag
+            RELEASE_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.event.inputs.version }}")
+            UPLOAD_URL=$(echo "$RELEASE_DATA" | jq -r .upload_url)
+          else
+            # For release events, use the upload URL from the event
+            UPLOAD_URL="${{ github.event.release.upload_url }}"
+          fi
+          echo "upload_url=$UPLOAD_URL" >> $GITHUB_OUTPUT
+          echo "Upload URL: $UPLOAD_URL"
 
   upload-artifacts:
     name: Upload ${{ matrix.duckdb_arch }}

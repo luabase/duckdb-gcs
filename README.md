@@ -249,19 +249,27 @@ SELECT * FROM glob('gs://my-bucket/*.parquet');
 To create a new release with pre-built binaries:
 
 1. **Update version** in your code if needed
-2. **Create and push a version tag:**
+2. **Commit and push your changes:**
 
 ```bash
-git tag v1.0.0
-git push origin v1.0.0
+git add .
+git commit -m "Prepare for release v1.0.0"
+git push origin main
 ```
 
-3. **GitHub Actions will automatically:**
-   - Build binaries for all platforms (Linux/macOS, AMD64/ARM64)
-   - Create a GitHub Release
-   - Upload the binaries to the release
+3. **Create a GitHub Release:**
+   - Go to https://github.com/northpolesec/duckdb-gcs/releases
+   - Click "Draft a new release"
+   - Create a new tag (e.g., `v1.0.0`)
+   - Fill in the release title and description
+   - Click "Publish release"
 
-4. **Users can then install with:**
+4. **GitHub Actions will automatically:**
+   - Build binaries for all platforms (Linux/macOS, AMD64/ARM64)
+   - Upload the binaries to the release
+   - Add installation instructions to the release notes
+
+5. **Users can then install with:**
 
 ```sql
 INSTALL gcs FROM 'https://github.com/northpolesec/duckdb-gcs/releases/download/v1.0.0';
