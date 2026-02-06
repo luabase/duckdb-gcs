@@ -1,0 +1,165 @@
+#
+# This workflow builds extension binaries and uploads them to GitHub Releases
+# when a new release is created
+#
+name: Release Extension
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    name: Build extension binaries
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.4.2
+    with:
+      duckdb_version: v1.4.2
+      ci_tools_version: v1.4.2
+      extension_name: gcs
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_rtools;windows_amd64_mingw;windows_amd64'
+
+  create-release:
+    name: Get Release Info
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      upload_url: ${{ steps.get_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Get version from release
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            # Get version from the release tag
+            VERSION="${{ github.event.release.tag_name }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Get release upload URL
+        id: get_release
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # For manual dispatch, fetch the release by tag
+            RELEASE_DATA=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.event.inputs.version }}")
+            UPLOAD_URL=$(echo "$RELEASE_DATA" | jq -r .upload_url)
+          else
+            # For release events, use the upload URL from the event
+            UPLOAD_URL="${{ github.event.release.upload_url }}"
+          fi
+          echo "upload_url=$UPLOAD_URL" >> $GITHUB_OUTPUT
+          echo "Upload URL: $UPLOAD_URL"
+
+  upload-artifacts:
+    name: Upload ${{ matrix.duckdb_arch }}
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        duckdb_arch:
+          - linux_amd64
+          - linux_arm64
+          - osx_amd64
+          - osx_arm64
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: gcs-v1.4.2-extension-${{ matrix.duckdb_arch }}
+          path: ./artifacts
+
+      - name: List downloaded files
+        run: |
+          echo "Contents of ./artifacts:"
+          ls -lah ./artifacts/
+
+      - name: Find extension file
+        id: find_file
+        run: |
+          # Find the .duckdb_extension file (might be gzipped or not)
+          if [ -f "./artifacts/gcs.duckdb_extension.gz" ]; then
+            echo "file=./artifacts/gcs.duckdb_extension.gz" >> $GITHUB_OUTPUT
+            echo "name=gcs.duckdb_extension.gz" >> $GITHUB_OUTPUT
+          elif [ -f "./artifacts/gcs.duckdb_extension" ]; then
+            echo "file=./artifacts/gcs.duckdb_extension" >> $GITHUB_OUTPUT
+            echo "name=gcs.duckdb_extension" >> $GITHUB_OUTPUT
+          else
+            echo "Extension file not found!"
+            ls -la ./artifacts/
+            exit 1
+          fi
+
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ steps.find_file.outputs.file }}
+          asset_name: ${{ matrix.duckdb_arch }}/gcs.duckdb_extension${{ endsWith(steps.find_file.outputs.name, '.gz') && '.gz' || '' }}
+          asset_content_type: application/octet-stream
+
+  create-repository-structure:
+    name: Create repository structure
+    needs: [create-release, upload-artifacts]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v3
+        with:
+          path: ./all-artifacts
+
+      - name: Create repository structure
+        run: |
+          VERSION="${{ needs.create-release.outputs.version }}"
+          DUCKDB_VERSION="v1.4.2"
+
+          mkdir -p repository/$DUCKDB_VERSION/{linux_amd64,linux_arm64,osx_amd64,osx_arm64}
+
+          # Copy artifacts to the correct structure
+          for arch in linux_amd64 linux_arm64 osx_amd64 osx_arm64; do
+            ARTIFACT_DIR="./all-artifacts/gcs-v1.4.2-extension-$arch"
+            if [ -f "$ARTIFACT_DIR/gcs.duckdb_extension.gz" ]; then
+              cp "$ARTIFACT_DIR/gcs.duckdb_extension.gz" \
+                 "repository/$DUCKDB_VERSION/$arch/"
+            elif [ -f "$ARTIFACT_DIR/gcs.duckdb_extension" ]; then
+              cp "$ARTIFACT_DIR/gcs.duckdb_extension" \
+                 "repository/$DUCKDB_VERSION/$arch/"
+            fi
+          done
+
+          # Create a tarball of the repository structure
+          tar -czf repository-structure.tar.gz repository/
+
+      - name: Upload repository structure as artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: repository-structure
+          path: repository-structure.tar.gz
+
+      - name: Upload repository structure to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ./repository-structure.tar.gz
+          asset_name: repository-structure.tar.gz
+          asset_content_type: application/gzip
