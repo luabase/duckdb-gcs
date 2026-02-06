@@ -512,6 +512,42 @@ bool GCSFileSystem::FileExists(const std::string &filename, optional_ptr<FileOpe
 	return object_metadata.ok();
 }
 
+bool GCSFileSystem::DirectoryExists(const string &directory, optional_ptr<FileOpener> opener) {
+	GCSParsedUrl parsed_url;
+	parsed_url.ParseUrl(directory);
+
+	auto context = GetOrCreateStorageContext(opener, directory, parsed_url);
+	if (!context) {
+		return false;
+	}
+
+	auto &gcs_context = context->As<GCSContextState>();
+
+	std::string prefix = parsed_url.object_key;
+	if (!prefix.empty() && prefix.back() != '/') {
+		prefix += '/';
+	}
+
+	try {
+		auto list_request = gcs_context.GetClient().ListObjects(
+			parsed_url.bucket,
+			gcs::Prefix(prefix),
+			gcs::MaxResults(1)
+		);
+
+		for (auto &&object_metadata : list_request) {
+			if (object_metadata) {
+				return true;
+			}
+			return false;
+		}
+
+		return false;
+	} catch (const std::exception &e) {
+		return false;
+	}
+}
+
 duckdb::unique_ptr<GCSFileHandle> GCSFileSystem::CreateHandle(const OpenFileInfo &info, FileOpenFlags flags,
                                                               optional_ptr<FileOpener> opener) {
 	GCSParsedUrl parsed_url;

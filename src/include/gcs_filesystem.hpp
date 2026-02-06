@@ -185,6 +185,7 @@ public:
 
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
 	bool FileExists(const std::string &filename, optional_ptr<FileOpener> opener = nullptr) override;
+	bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
 
 protected:
 	unique_ptr<FileHandle> OpenFileExtended(const OpenFileInfo &info, FileOpenFlags flags,
