@@ -529,11 +529,8 @@ bool GCSFileSystem::DirectoryExists(const string &directory, optional_ptr<FileOp
 	}
 
 	try {
-		auto list_request = gcs_context.GetClient().ListObjects(
-			parsed_url.bucket,
-			gcs::Prefix(prefix),
-			gcs::MaxResults(1)
-		);
+		auto list_request =
+		    gcs_context.GetClient().ListObjects(parsed_url.bucket, gcs::Prefix(prefix), gcs::MaxResults(1));
 
 		for (auto &&object_metadata : list_request) {
 			if (object_metadata) {
