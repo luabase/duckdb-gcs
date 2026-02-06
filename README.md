@@ -117,6 +117,40 @@ gcloud auth application-default login
 "
 ```
 
+## Installation
+
+### Install from GitHub Releases
+
+Pre-built binaries are available for Linux and macOS:
+
+```bash
+# Start DuckDB with unsigned extensions enabled
+duckdb -unsigned
+```
+
+```sql
+-- Install from GitHub releases
+INSTALL gcs FROM 'https://github.com/northpolesec/duckdb-gcs/releases/latest/download';
+LOAD gcs;
+```
+
+Or install a specific version:
+
+```sql
+-- Install specific version (e.g., v1.0.0)
+INSTALL gcs FROM 'https://github.com/northpolesec/duckdb-gcs/releases/download/v1.0.0';
+LOAD gcs;
+```
+
+### Install from Source
+
+For development or if pre-built binaries aren't available for your platform:
+
+```sql
+-- Load the extension directly
+LOAD 'build/release/extension/gcs/gcs.duckdb_extension';
+```
+
 ## Usage
 
 ### Loading the Extension
@@ -206,6 +240,46 @@ LIMIT 10;
 
 -- Get file metadata
 SELECT * FROM glob('gs://my-bucket/*.parquet');
+```
+
+## Releasing
+
+### Creating a New Release
+
+To create a new release with pre-built binaries:
+
+1. **Update version** in your code if needed
+2. **Create and push a version tag:**
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+3. **GitHub Actions will automatically:**
+   - Build binaries for all platforms (Linux/macOS, AMD64/ARM64)
+   - Create a GitHub Release
+   - Upload the binaries to the release
+
+4. **Users can then install with:**
+
+```sql
+INSTALL gcs FROM 'https://github.com/northpolesec/duckdb-gcs/releases/download/v1.0.0';
+```
+
+### Manual Release (Alternative)
+
+If you prefer to build and upload manually:
+
+```bash
+# Build for your current platform
+make release
+
+# Organize into repository structure
+./scripts/organize_repository.sh v1.0.0 v1.4.2
+
+# Upload to your hosting (S3, GCS, etc.)
+aws s3 sync repository/ s3://your-bucket/ --acl public-read
 ```
 
 ## Contributing
