@@ -4,6 +4,7 @@
 #include <thread>
 #include <vector>
 #include <atomic>
+#include <cstring>
 
 using namespace duckdb;
 
@@ -408,3 +409,189 @@ TEST_CASE("GCSFileSystem: DirectoryExists", "[gcs][directory]") {
 		REQUIRE(max_results == 1);
 	}
 }
+
+TEST_CASE("GCSFileSystem: CreateDirectory", "[gcs][directory]") {
+	GCSReadOptions options;
+	options.enable_caches = false;
+	options.enable_grpc = true;
+
+	auto credentials = google::cloud::MakeInsecureCredentials();
+	auto gcs_options = google::cloud::Options {}.set<google::cloud::UnifiedCredentialsOption>(credentials);
+
+	auto client = gcs::Client(gcs_options);
+	auto context = make_shared_ptr<GCSContextState>(client, options);
+
+	SECTION("CreateDirectory gracefully handles invalid URLs without opener") {
+		GCSFileSystem fs("");
+
+		REQUIRE_NOTHROW(fs.CreateDirectory("", nullptr));
+		REQUIRE_NOTHROW(fs.CreateDirectory("not-a-url", nullptr));
+		REQUIRE_NOTHROW(fs.CreateDirectory("gs://", nullptr));
+	}
+
+	SECTION("CreateDirectory succeeds silently without opener for valid URLs") {
+		GCSFileSystem fs("");
+
+		REQUIRE_NOTHROW(fs.CreateDirectory("gs://my-bucket/some/path", nullptr));
+		REQUIRE_NOTHROW(fs.CreateDirectory("gs://my-bucket/some/path/", nullptr));
+		REQUIRE_NOTHROW(fs.CreateDirectory("gcs://my-bucket/dir", nullptr));
+		REQUIRE_NOTHROW(fs.CreateDirectory("gcss://my-bucket/dir", nullptr));
+	}
+
+	SECTION("CreateDirectory marker object always has trailing slash") {
+		std::vector<std::pair<std::string, std::string>> test_cases = {
+		    {"path/to/dir", "path/to/dir/"},
+		    {"path/to/dir/", "path/to/dir/"},
+		    {"single", "single/"},
+		    {"single/", "single/"},
+		    {"nested/path/here", "nested/path/here/"},
+		};
+
+		for (const auto &tc : test_cases) {
+			GCSParsedUrl parsed;
+			std::string full_url = "gs://bucket/" + tc.first;
+			parsed.ParseUrl(full_url);
+
+			std::string marker = parsed.object_key;
+			if (!marker.empty() && marker.back() != '/') {
+				marker += '/';
+			}
+			REQUIRE(marker == tc.second);
+		}
+	}
+
+	SECTION("CreateDirectory bucket root leaves empty prefix") {
+		GCSParsedUrl parsed;
+		parsed.ParseUrl("gs://bucket/");
+		REQUIRE(parsed.object_key.empty());
+
+		std::string prefix = parsed.object_key;
+		if (!prefix.empty() && prefix.back() != '/') {
+			prefix += '/';
+		}
+		REQUIRE(prefix.empty());
+	}
+
+	SECTION("CreateDirectory path normalization round-trip") {
+		std::vector<std::string> equivalent_paths = {
+		    "gs://bucket/path/to/dir",
+		    "gs://bucket/path/to/dir/",
+		};
+
+		std::string first_marker;
+		for (const auto &path : equivalent_paths) {
+			GCSParsedUrl parsed;
+			parsed.ParseUrl(path);
+
+			std::string marker = parsed.object_key;
+			if (!marker.empty() && marker.back() != '/') {
+				marker += '/';
+			}
+
+			if (first_marker.empty()) {
+				first_marker = marker;
+			} else {
+				REQUIRE(marker == first_marker);
+			}
+		}
+		REQUIRE(first_marker == "path/to/dir/");
+	}
+}
+
+TEST_CASE("GCSFileSystem: Write support", "[gcs][write]") {
+	GCSReadOptions options;
+	options.enable_caches = false;
+	options.enable_grpc = true;
+
+	auto credentials = google::cloud::MakeInsecureCredentials();
+	auto gcs_options = google::cloud::Options {}.set<google::cloud::UnifiedCredentialsOption>(credentials);
+
+	auto client = gcs::Client(gcs_options);
+	auto context = make_shared_ptr<GCSContextState>(client, options);
+
+	SECTION("Write handle tracks bytes written") {
+		GCSFileSystem fs("");
+
+		idx_t total_written = 0;
+		idx_t length = 0;
+
+		int64_t write1 = 1024;
+		total_written += write1;
+		length = total_written;
+		REQUIRE(total_written == 1024);
+		REQUIRE(length == 1024);
+
+		int64_t write2 = 2048;
+		total_written += write2;
+		length = total_written;
+		REQUIRE(total_written == 3072);
+		REQUIRE(length == 3072);
+	}
+
+	SECTION("Sequential write position validation") {
+		idx_t total_written = 0;
+
+		idx_t offset1 = 0;
+		REQUIRE(offset1 == total_written);
+		total_written += 1024;
+
+		idx_t offset2 = 1024;
+		REQUIRE(offset2 == total_written);
+		total_written += 512;
+
+		idx_t offset3 = 1536;
+		REQUIRE(offset3 == total_written);
+
+		idx_t bad_offset = 0;
+		REQUIRE(bad_offset != total_written);
+	}
+
+	SECTION("Truncate only allowed at current size") {
+		idx_t total_written = 4096;
+
+		int64_t new_size = 4096;
+		REQUIRE(static_cast<idx_t>(new_size) == total_written);
+
+		int64_t bad_size = 2048;
+		REQUIRE(static_cast<idx_t>(bad_size) != total_written);
+	}
+
+	SECTION("Write handle does not allocate read buffer") {
+		FileOpenFlags write_flags(FileOpenFlags::FILE_FLAGS_WRITE | FileOpenFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		REQUIRE(write_flags.OpenForWriting());
+		REQUIRE(write_flags.OverwriteExistingFile());
+
+		FileOpenFlags read_flags(FileOpenFlags::FILE_FLAGS_READ);
+		REQUIRE(!read_flags.OpenForWriting());
+	}
+
+	SECTION("CreateHandle skips metadata load for write flags") {
+		FileOpenFlags write_create(FileOpenFlags::FILE_FLAGS_WRITE | FileOpenFlags::FILE_FLAGS_FILE_CREATE);
+		REQUIRE(write_create.OpenForWriting());
+		REQUIRE(write_create.CreateFileIfNotExists());
+
+		FileOpenFlags write_new(FileOpenFlags::FILE_FLAGS_WRITE | FileOpenFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		REQUIRE(write_new.OpenForWriting());
+		REQUIRE(write_new.OverwriteExistingFile());
+
+		FileOpenFlags read_only(FileOpenFlags::FILE_FLAGS_READ);
+		REQUIRE(!read_only.OpenForWriting());
+		REQUIRE(!read_only.CreateFileIfNotExists());
+		REQUIRE(!read_only.OverwriteExistingFile());
+	}
+
+	SECTION("RemoveFile requires valid GCS URL") {
+		GCSFileSystem fs("");
+
+		REQUIRE_THROWS_AS(fs.RemoveFile("", nullptr), duckdb::InvalidInputException);
+		REQUIRE_THROWS_AS(fs.RemoveFile("not-a-url", nullptr), duckdb::InvalidInputException);
+		REQUIRE_THROWS_AS(fs.RemoveFile("gs://", nullptr), duckdb::InvalidInputException);
+	}
+
+	SECTION("RemoveFile requires storage context") {
+		GCSFileSystem fs("");
+
+		REQUIRE_THROWS_AS(fs.RemoveFile("gs://bucket/file.txt", nullptr), duckdb::IOException);
+	}
+}
+

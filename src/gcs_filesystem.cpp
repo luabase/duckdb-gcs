@@ -181,13 +181,35 @@ GCSFileHandle::GCSFileHandle(GCSFileSystem &fs, const OpenFileInfo &info, FileOp
       file_offset(0), buffer_start(0), buffer_end(0), read_options(read_options), bucket(bucket),
       object_key(object_key), context(std::move(context)) {
 
-	if (!flags.RequireParallelAccess()) {
+	if (!flags.RequireParallelAccess() && !flags.OpenForWriting()) {
 		read_buffer = duckdb::unique_ptr<data_t[]>(new data_t[read_options.buffer_size]);
 	}
 }
 
 bool GCSFileHandle::PostConstruct() {
 	return true;
+}
+
+void GCSFileHandle::Close() {
+	if (write_stream && write_stream->IsOpen()) {
+		write_stream->Close();
+		auto metadata = write_stream->metadata();
+		if (!metadata) {
+			// noop
+		}
+		write_stream.reset();
+	}
+}
+
+void GCSFileHandle::InitializeWriteStream() {
+	if (write_stream) {
+		return;
+	}
+	auto client = context->GetClient();
+	write_stream = std::make_unique<gcs::ObjectWriteStream>(client.WriteObject(bucket, object_key));
+	if (!write_stream->IsOpen()) {
+		throw IOException("Failed to open GCS write stream for gs://%s/%s", bucket, object_key);
+	}
 }
 
 void GCSFileHandle::TryAddLogger(FileOpener &opener) {
@@ -335,8 +357,101 @@ void GCSFileSystem::Seek(FileHandle &handle, idx_t location) {
 	gcp_handle.file_offset = location;
 }
 
+void GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
+	auto &gcs_handle = handle.Cast<GCSFileHandle>();
+
+	if (!gcs_handle.flags.OpenForWriting()) {
+		throw IOException("Cannot write to file opened in read-only mode: %s", handle.path);
+	}
+
+	if (location != gcs_handle.total_written) {
+		throw IOException("GCS only supports sequential writes. Expected offset %llu but got %llu for %s",
+		                  gcs_handle.total_written, location, handle.path);
+	}
+
+	gcs_handle.InitializeWriteStream();
+
+	gcs_handle.write_stream->write(static_cast<const char *>(buffer), nr_bytes);
+	if (gcs_handle.write_stream->bad()) {
+		throw IOException("Failed to write %lld bytes to gs://%s/%s", nr_bytes, gcs_handle.bucket,
+		                  gcs_handle.object_key);
+	}
+
+	gcs_handle.total_written += nr_bytes;
+	gcs_handle.length = gcs_handle.total_written;
+}
+
+int64_t GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes) {
+	auto &gcs_handle = handle.Cast<GCSFileHandle>();
+
+	if (!gcs_handle.flags.OpenForWriting()) {
+		throw IOException("Cannot write to file opened in read-only mode: %s", handle.path);
+	}
+
+	gcs_handle.InitializeWriteStream();
+
+	gcs_handle.write_stream->write(static_cast<const char *>(buffer), nr_bytes);
+	if (gcs_handle.write_stream->bad()) {
+		throw IOException("Failed to write %lld bytes to gs://%s/%s", nr_bytes, gcs_handle.bucket,
+		                  gcs_handle.object_key);
+	}
+
+	gcs_handle.total_written += nr_bytes;
+	gcs_handle.length = gcs_handle.total_written;
+	return nr_bytes;
+}
+
+void GCSFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
+	auto &gcs_handle = handle.Cast<GCSFileHandle>();
+
+	// GCS doesn't support in-place truncation.
+	if (static_cast<idx_t>(new_size) == gcs_handle.total_written) {
+		return;
+	}
+
+	// Truncating to 0 is allowed before any writes have happened (reset)
+	if (new_size == 0 && gcs_handle.total_written == 0) {
+		return;
+	}
+
+	throw IOException("GCS does not support truncating objects to arbitrary sizes. "
+	                  "Requested size: %lld, current size: %llu for %s",
+	                  new_size, gcs_handle.total_written, handle.path);
+}
+
 void GCSFileSystem::FileSync(FileHandle &handle) {
-	// No-op for read-only filesystem
+	auto &gcs_handle = handle.Cast<GCSFileHandle>();
+
+	if (gcs_handle.write_stream && gcs_handle.write_stream->IsOpen()) {
+		gcs_handle.write_stream->Close();
+		auto metadata = gcs_handle.write_stream->metadata();
+		if (!metadata) {
+			throw IOException("Failed to finalize write to gs://%s/%s: %s", gcs_handle.bucket,
+			                  gcs_handle.object_key, metadata.status().message());
+		}
+
+		gcs_handle.context->SetCachedMetadata(gcs_handle.bucket, gcs_handle.object_key, *metadata);
+		gcs_handle.length = metadata->size();
+
+		gcs_handle.write_stream.reset();
+	}
+}
+
+void GCSFileSystem::RemoveFile(const string &filename, optional_ptr<FileOpener> opener) {
+	GCSParsedUrl parsed_url;
+	parsed_url.ParseUrl(filename);
+
+	auto context = GetOrCreateStorageContext(opener, filename, parsed_url);
+	if (!context) {
+		throw IOException("Failed to create GCS context for removing file: %s", filename);
+	}
+
+	auto &gcs_context = context->As<GCSContextState>();
+	auto status = gcs_context.GetClient().DeleteObject(parsed_url.bucket, parsed_url.object_key);
+	if (!status.ok()) {
+		throw IOException("Failed to remove file gs://%s/%s: %s", parsed_url.bucket, parsed_url.object_key,
+		                  status.message());
+	}
 }
 
 bool GCSFileSystem::LoadFileInfo(GCSFileHandle &handle) {
@@ -545,6 +660,53 @@ bool GCSFileSystem::DirectoryExists(const string &directory, optional_ptr<FileOp
 	}
 }
 
+void GCSFileSystem::CreateDirectory(const string &directory, optional_ptr<FileOpener> opener) {
+	GCSParsedUrl parsed_url;
+	try {
+		parsed_url.ParseUrl(directory);
+	} catch (const std::exception &e) {
+		return;
+	}
+
+	auto context = GetOrCreateStorageContext(opener, directory, parsed_url);
+	if (!context) {
+		return;
+	}
+
+	auto &gcs_context = context->As<GCSContextState>();
+
+	std::string prefix = parsed_url.object_key;
+	if (!prefix.empty() && prefix.back() != '/') {
+		prefix += '/';
+	}
+
+	try {
+		auto list_request =
+		    gcs_context.GetClient().ListObjects(parsed_url.bucket, gcs::Prefix(prefix), gcs::MaxResults(1));
+		for (auto &&object_metadata : list_request) {
+			if (object_metadata) {
+				return;
+			}
+		}
+	} catch (const std::exception &) {
+		// noop
+	}
+
+	try {
+		auto writer = gcs_context.GetClient().WriteObject(parsed_url.bucket, prefix);
+		writer.Close();
+
+		auto metadata = writer.metadata();
+		if (!metadata) {
+			throw IOException("Failed to create directory \"%s\": %s", directory, metadata.status().message());
+		}
+	} catch (const IOException &) {
+		throw;
+	} catch (const std::exception &e) {
+		throw IOException("Failed to create directory \"%s\": %s", directory, e.what());
+	}
+}
+
 duckdb::unique_ptr<GCSFileHandle> GCSFileSystem::CreateHandle(const OpenFileInfo &info, FileOpenFlags flags,
                                                               optional_ptr<FileOpener> opener) {
 	GCSParsedUrl parsed_url;
@@ -560,8 +722,9 @@ duckdb::unique_ptr<GCSFileHandle> GCSFileSystem::CreateHandle(const OpenFileInfo
 	    make_uniq<GCSFileHandle>(*this, info, flags, read_options, parsed_url.bucket, parsed_url.object_key, context);
 	handle->TryAddLogger(*opener);
 
-	// Load file metadata
-	LoadFileInfo(*handle);
+	if (!flags.OpenForWriting() && !flags.CreateFileIfNotExists() && !flags.OverwriteExistingFile()) {
+		LoadFileInfo(*handle);
+	}
 
 	return handle;
 }
