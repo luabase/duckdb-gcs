@@ -440,11 +440,8 @@ TEST_CASE("GCSFileSystem: CreateDirectory", "[gcs][directory]") {
 
 	SECTION("CreateDirectory marker object always has trailing slash") {
 		std::vector<std::pair<std::string, std::string>> test_cases = {
-		    {"path/to/dir", "path/to/dir/"},
-		    {"path/to/dir/", "path/to/dir/"},
-		    {"single", "single/"},
-		    {"single/", "single/"},
-		    {"nested/path/here", "nested/path/here/"},
+		    {"path/to/dir", "path/to/dir/"}, {"path/to/dir/", "path/to/dir/"},          {"single", "single/"},
+		    {"single/", "single/"},          {"nested/path/here", "nested/path/here/"},
 		};
 
 		for (const auto &tc : test_cases) {
@@ -594,4 +591,3 @@ TEST_CASE("GCSFileSystem: Write support", "[gcs][write]") {
 		REQUIRE_THROWS_AS(fs.RemoveFile("gs://bucket/file.txt", nullptr), duckdb::IOException);
 	}
 }
-

@@ -426,8 +426,8 @@ void GCSFileSystem::FileSync(FileHandle &handle) {
 		gcs_handle.write_stream->Close();
 		auto metadata = gcs_handle.write_stream->metadata();
 		if (!metadata) {
-			throw IOException("Failed to finalize write to gs://%s/%s: %s", gcs_handle.bucket,
-			                  gcs_handle.object_key, metadata.status().message());
+			throw IOException("Failed to finalize write to gs://%s/%s: %s", gcs_handle.bucket, gcs_handle.object_key,
+			                  metadata.status().message());
 		}
 
 		gcs_handle.context->SetCachedMetadata(gcs_handle.bucket, gcs_handle.object_key, *metadata);
