@@ -3,6 +3,7 @@
 #include <google/cloud/storage/client.h>
 #include <google/cloud/storage/grpc_plugin.h>
 #include <google/cloud/storage/object_metadata.h>
+#include <google/cloud/storage/object_write_stream.h>
 #include <unordered_map>
 #include <mutex>
 #include <chrono>
@@ -110,9 +111,8 @@ public:
 
 	bool PostConstruct();
 	void TryAddLogger(FileOpener &opener);
-	void Close() override {
-		// No explicit cleanup needed.
-	}
+	void Close() override;
+	void InitializeWriteStream();
 
 	inline gcs::Client GetClient() {
 		return context->GetClient();
@@ -141,6 +141,9 @@ public:
 	// Context is owned by the ClientContext's registered_state, not by this handle.
 	// This prevents circular references since the context never holds references to handles.
 	shared_ptr<GCSContextState> context;
+
+	std::unique_ptr<gcs::ObjectWriteStream> write_stream;
+	idx_t total_written = 0;
 };
 
 class GCSFileSystem : public FileSystem {
@@ -163,6 +166,8 @@ public:
 
 	void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
 	int64_t Read(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
+	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
+	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 	bool CanSeek() override {
 		return true;
 	}
@@ -175,7 +180,9 @@ public:
 	int64_t GetFileSize(FileHandle &handle) override;
 	timestamp_t GetLastModifiedTime(FileHandle &handle) override;
 	void Seek(FileHandle &handle, idx_t location) override;
+	void Truncate(FileHandle &handle, int64_t new_size) override;
 	void FileSync(FileHandle &handle) override;
+	void RemoveFile(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 
 	bool LoadFileInfo(GCSFileHandle &handle);
 
@@ -186,6 +193,7 @@ public:
 	vector<OpenFileInfo> Glob(const string &path, FileOpener *opener = nullptr) override;
 	bool FileExists(const std::string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 	bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
+	void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
 
 protected:
 	unique_ptr<FileHandle> OpenFileExtended(const OpenFileInfo &info, FileOpenFlags flags,
