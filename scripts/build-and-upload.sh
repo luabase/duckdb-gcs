@@ -285,8 +285,8 @@ upload_to_gcs() {
     done
     echo ""
 
-    gsutil -m rsync -r "$PROJECT_DIR/dist/" "gs://$GCS_BUCKET/"
-    gsutil -m acl ch -r -u AllUsers:R "gs://$GCS_BUCKET/"
+    gsutil -m rsync -r -x '\.DS_Store$|\.keep$' "$PROJECT_DIR/dist/" "gs://$GCS_BUCKET/"
+    gsutil iam ch allUsers:objectViewer "gs://$GCS_BUCKET"
 
     ok "Upload complete!"
     echo ""
