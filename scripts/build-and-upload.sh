@@ -65,16 +65,23 @@ HOST_PLATFORM="$(detect_host_platform)"
 # Parse arguments
 # ---------------------------------------------------------------------------
 DO_UPLOAD=true
+VERBOSE=false
 PLATFORMS=()
 
 for arg in "$@"; do
     case "$arg" in
         --no-upload) DO_UPLOAD=false ;;
+        --verbose|-v) VERBOSE=true ;;
         --help|-h)
-            echo "Usage: $0 [--no-upload] [platform ...]"
+            echo "Usage: $0 [--no-upload] [--verbose|-v] [platform ...]"
             echo ""
             echo "Platforms: osx_arm64  osx_amd64  linux_amd64  linux_arm64"
             echo "If no platform is specified, all four are built."
+            echo ""
+            echo "Options:"
+            echo "  --verbose, -v   Show full build output (default: progress lines only)"
+            echo "  --no-upload     Build only, don't upload to GCS"
+            echo "  JOBS=N          Override parallel job count (default: auto-detect)"
             echo ""
             echo "Host detected: $HOST_PLATFORM"
             exit 0
@@ -105,7 +112,6 @@ mkdir -p "$OUTPUT_DIR"
 # Helpers
 # ---------------------------------------------------------------------------
 nproc_portable() {
-    # Override with JOBS env var: JOBS=8 ./scripts/build-and-upload.sh
     if [ -n "${JOBS:-}" ]; then
         echo "$JOBS"
     elif command -v nproc &>/dev/null; then
@@ -114,6 +120,14 @@ nproc_portable() {
         sysctl -n hw.ncpu
     else
         echo 4
+    fi
+}
+
+build_filter() {
+    if $VERBOSE; then
+        cat
+    else
+        grep --line-buffered -E '^\[[ 0-9]{3}%\]|error:|Error |vcpkg install|Installing |===|Building CXX|Linking ' || true
     fi
 }
 
@@ -160,7 +174,7 @@ build_native() {
         make_env="OSX_BUILD_ARCH=arm64 VCPKG_TARGET_TRIPLET=arm64-osx-release VCPKG_HOST_TRIPLET=x64-osx-release"
     fi
 
-    eval "$make_env make -j$(nproc_portable)" 2>&1 | tail -5
+    eval "$make_env make -j$(nproc_portable)" 2>&1 | build_filter
 
     local ext="build/release/extension/$EXTENSION_NAME/$EXTENSION_NAME.duckdb_extension"
     mkdir -p "$OUTPUT_DIR/$target_platform"
@@ -212,10 +226,10 @@ build_docker() {
             rm -rf build/release
 
             echo "=== Building ==="
-            make -j$(nproc) 2>&1 | tail -10
+            make -j$(nproc)
 
             echo "=== Done ==="
-        '
+        ' 2>&1 | build_filter
 
     local ext="build/release/extension/$EXTENSION_NAME/$EXTENSION_NAME.duckdb_extension"
     mkdir -p "$OUTPUT_DIR/$target_platform"
