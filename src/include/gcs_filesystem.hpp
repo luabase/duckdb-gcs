@@ -67,6 +67,7 @@ public:
 	std::optional<gcs::ObjectMetadata> GetCachedMetadata(const std::string &bucket, const std::string &object_key);
 	void SetCachedMetadata(const std::string &bucket, const std::string &object_key,
 	                       const gcs::ObjectMetadata &metadata);
+	void InvalidateCachedMetadata(const std::string &bucket, const std::string &object_key);
 	std::optional<vector<OpenFileInfo>> GetCachedList(const std::string &bucket, const std::string &prefix);
 	void SetCachedList(const std::string &bucket, const std::string &prefix, const vector<OpenFileInfo> &results);
 
@@ -111,6 +112,8 @@ public:
 	GCSFileHandle(GCSFileSystem &fs, const OpenFileInfo &info, FileOpenFlags flags, const GCSReadOptions &read_options,
 	              const std::string &bucket, const std::string &object_key, shared_ptr<GCSContextState> context);
 
+	~GCSFileHandle() override;
+
 	bool PostConstruct();
 	void TryAddLogger(FileOpener &opener);
 	void Close() override;
@@ -125,6 +128,7 @@ public:
 	// File info
 	idx_t length;
 	timestamp_t last_modified;
+	std::int64_t generation = 0;
 
 	// Read buffer
 	duckdb::unique_ptr<data_t[]> read_buffer;
@@ -208,6 +212,7 @@ protected:
 	duckdb::unique_ptr<GCSFileHandle> CreateHandle(const OpenFileInfo &info, FileOpenFlags flags,
 	                                               optional_ptr<FileOpener> opener);
 	void ReadRange(GCSFileHandle &handle, idx_t file_offset, char *buffer_out, idx_t buffer_out_len);
+	void ReadRangeInternal(GCSFileHandle &handle, idx_t file_offset, char *buffer_out, idx_t buffer_out_len);
 
 	const std::string &GetContextPrefix() const;
 	shared_ptr<GCSContextState> GetOrCreateStorageContext(optional_ptr<FileOpener> opener, const string &path,
