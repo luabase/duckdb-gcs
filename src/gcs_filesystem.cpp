@@ -401,21 +401,21 @@ int64_t GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes)
 }
 
 void GCSFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
-	auto &gcs_handle = handle.Cast<GCSFileHandle>();
+	auto &gsfh = handle.Cast<GCSFileHandle>();
 
 	// GCS doesn't support in-place truncation.
-	if (static_cast<idx_t>(new_size) == gcs_handle.total_written) {
+	if (static_cast<idx_t>(new_size) == gsfh.file_offset) {
 		return;
 	}
 
 	// Truncating to 0 is allowed before any writes have happened (reset)
-	if (new_size == 0 && gcs_handle.total_written == 0) {
+	if (new_size == 0 && gsfh.file_offset == 0) {
 		return;
 	}
 
 	throw IOException("GCS does not support truncating objects to arbitrary sizes. "
 	                  "Requested size: %lld, current size: %llu for %s",
-	                  new_size, gcs_handle.total_written, handle.path);
+	                  new_size, gsfh.file_offset, handle.path);
 }
 
 void GCSFileSystem::FileSync(FileHandle &handle) {

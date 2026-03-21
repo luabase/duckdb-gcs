@@ -164,7 +164,6 @@ public:
 	// This prevents circular references since the context never holds references to handles.
 	shared_ptr<GCSContextState> context;
 
-private:
 	std::unique_ptr<google::cloud::storage::ObjectWriteStream> write_stream = nullptr;
 };
 
