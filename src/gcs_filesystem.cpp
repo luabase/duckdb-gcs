@@ -397,7 +397,7 @@ int64_t GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes)
 	auto &gsfh = handle.Cast<GCSFileHandle>();
 	auto write_buffer = char_ptr_cast(buffer);
 	return gsfh.WriteInto(write_buffer, nr_bytes);
-}eturn nr_bytes;
+	return nr_bytes;
 }
 
 void GCSFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
