@@ -52,10 +52,6 @@ gcs::Client BuildOptimizedClient(std::shared_ptr<google::cloud::Credentials> cre
 	return gcs::Client(options);
 }
 
-GCSFileHandle::~GCSFileHandle() {
-	Close();
-}
-
 void GCSContextState::QueryEnd() {
 }
 
@@ -211,20 +207,6 @@ bool GCSFileHandle::PostConstruct() {
 	return true;
 }
 
-void GCSFileHandle::Close() {
-	if (write_stream != nullptr) {
-		write_stream->Close();
-		auto metadata = write_stream->metadata();
-		if (!metadata) {
-			fprintf(stderr, "Failed to finalize write from GCS: %s", metadata.status().message().c_str());
-			fflush(stderr);
-		} else {
-			context->SetCachedMetadata(bucket, object_key, *metadata);
-		}
-		write_stream = nullptr;
-	}
-}
-
 void GCSFileHandle::InitializeWriteStream() {
 	if (write_stream) {
 		return;
@@ -241,6 +223,21 @@ void GCSFileHandle::TryAddLogger(FileOpener &opener) {
 	if (context) {
 		logger = context->logger;
 	}
+}
+
+int64_t GCSFileHandle::WriteInto(char *buffer, int64_t nr_bytes) {
+	// init Write stream if needed
+	if (write_stream == nullptr) {
+		auto stream =
+		    context->GetClient().WriteObject(bucket, object_key, google::cloud::storage::AutoFinalizeDisabled());
+		write_stream = make_uniq<google::cloud::storage::ObjectWriteStream>(std::move(stream));
+	}
+	write_stream->write(buffer, nr_bytes);
+	if (write_stream->bad()) {
+		throw IOException("Failed to write to GCS: " + write_stream->last_status().message());
+	}
+	file_offset += nr_bytes;
+	return nr_bytes;
 }
 
 // GCSFileSystem implementation
@@ -381,48 +378,26 @@ void GCSFileSystem::Seek(FileHandle &handle, idx_t location) {
 	gcp_handle.file_offset = location;
 }
 
+idx_t GCSFileSystem::SeekPosition(FileHandle &handle) {
+	auto &gcp_handle = handle.Cast<GCSFileHandle>();
+	return gcp_handle.file_offset;
+}
+
 void GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
-	auto &gcs_handle = handle.Cast<GCSFileHandle>();
-
-	if (!gcs_handle.flags.OpenForWriting()) {
-		throw IOException("Cannot write to file opened in read-only mode: %s", handle.path);
+	auto &gsfh = handle.Cast<GCSFileHandle>();
+	auto write_buffer = char_ptr_cast(buffer);
+	if (location != gsfh.file_offset) {
+		throw IOException("GCS does not support random writes (requested offset: %llu, current offset: %llu)", location,
+		                  gsfh.file_offset);
 	}
-
-	if (location != gcs_handle.total_written) {
-		throw IOException("GCS only supports sequential writes. Expected offset %llu but got %llu for %s",
-		                  gcs_handle.total_written, location, handle.path);
-	}
-
-	gcs_handle.InitializeWriteStream();
-
-	gcs_handle.write_stream->write(static_cast<const char *>(buffer), nr_bytes);
-	if (gcs_handle.write_stream->bad()) {
-		throw IOException("Failed to write %lld bytes to gs://%s/%s", nr_bytes, gcs_handle.bucket,
-		                  gcs_handle.object_key);
-	}
-
-	gcs_handle.total_written += nr_bytes;
-	gcs_handle.length = gcs_handle.total_written;
+	gsfh.WriteInto(write_buffer, nr_bytes);
 }
 
 int64_t GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes) {
-	auto &gcs_handle = handle.Cast<GCSFileHandle>();
-
-	if (!gcs_handle.flags.OpenForWriting()) {
-		throw IOException("Cannot write to file opened in read-only mode: %s", handle.path);
-	}
-
-	gcs_handle.InitializeWriteStream();
-
-	gcs_handle.write_stream->write(static_cast<const char *>(buffer), nr_bytes);
-	if (gcs_handle.write_stream->bad()) {
-		throw IOException("Failed to write %lld bytes to gs://%s/%s", nr_bytes, gcs_handle.bucket,
-		                  gcs_handle.object_key);
-	}
-
-	gcs_handle.total_written += nr_bytes;
-	gcs_handle.length = gcs_handle.total_written;
-	return nr_bytes;
+	auto &gsfh = handle.Cast<GCSFileHandle>();
+	auto write_buffer = char_ptr_cast(buffer);
+	return gsfh.WriteInto(write_buffer, nr_bytes);
+}eturn nr_bytes;
 }
 
 void GCSFileSystem::Truncate(FileHandle &handle, int64_t new_size) {

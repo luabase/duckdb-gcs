@@ -116,12 +116,30 @@ public:
 
 	bool PostConstruct();
 	void TryAddLogger(FileOpener &opener);
-	void Close() override;
+
+	void Close() override {
+		if (write_stream != nullptr) {
+			write_stream->Close();
+			auto metadata = write_stream->metadata();
+			if (!metadata) {
+				fprintf(stderr, "Failed to finalize write from GCS: %s", metadata.status().message().c_str());
+				fflush(stderr);
+			}
+			write_stream = nullptr;
+		}
+	}
+
+	~GCSFileHandle() override {
+		Close();
+	}
+
 	void InitializeWriteStream();
 
 	inline gcs::Client GetClient() {
 		return context->GetClient();
 	}
+
+	int64_t WriteInto(char *buffer, int64_t nr_bytes);
 
 	FileOpenFlags flags;
 
@@ -148,8 +166,8 @@ public:
 	// This prevents circular references since the context never holds references to handles.
 	shared_ptr<GCSContextState> context;
 
-	std::unique_ptr<gcs::ObjectWriteStream> write_stream;
-	idx_t total_written = 0;
+private:
+	std::unique_ptr<google::cloud::storage::ObjectWriteStream> write_stream = nullptr;
 };
 
 class GCSFileSystem : public FileSystem {
@@ -186,6 +204,7 @@ public:
 	int64_t GetFileSize(FileHandle &handle) override;
 	timestamp_t GetLastModifiedTime(FileHandle &handle) override;
 	void Seek(FileHandle &handle, idx_t location) override;
+	idx_t SeekPosition(FileHandle &handle) override;
 	void Truncate(FileHandle &handle, int64_t new_size) override;
 	void FileSync(FileHandle &handle) override;
 	void RemoveFile(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
@@ -200,6 +219,8 @@ public:
 	bool FileExists(const std::string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 	bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
 	void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
+	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
+	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 
 protected:
 	unique_ptr<FileHandle> OpenFileExtended(const OpenFileInfo &info, FileOpenFlags flags,
