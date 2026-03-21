@@ -52,6 +52,10 @@ gcs::Client BuildOptimizedClient(std::shared_ptr<google::cloud::Credentials> cre
 	return gcs::Client(options);
 }
 
+GCSFileHandle::~GCSFileHandle() {
+	Close();
+}
+
 void GCSContextState::QueryEnd() {
 }
 
@@ -208,13 +212,16 @@ bool GCSFileHandle::PostConstruct() {
 }
 
 void GCSFileHandle::Close() {
-	if (write_stream && write_stream->IsOpen()) {
+	if (write_stream != nullptr) {
 		write_stream->Close();
 		auto metadata = write_stream->metadata();
 		if (!metadata) {
-			// noop
+			fprintf(stderr, "Failed to finalize write from GCS: %s", metadata.status().message().c_str());
+			fflush(stderr);
+		} else {
+			context->SetCachedMetadata(bucket, object_key, *metadata);
 		}
-		write_stream.reset();
+		write_stream = nullptr;
 	}
 }
 
