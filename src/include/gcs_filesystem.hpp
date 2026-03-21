@@ -112,8 +112,6 @@ public:
 	GCSFileHandle(GCSFileSystem &fs, const OpenFileInfo &info, FileOpenFlags flags, const GCSReadOptions &read_options,
 	              const std::string &bucket, const std::string &object_key, shared_ptr<GCSContextState> context);
 
-	~GCSFileHandle() override;
-
 	bool PostConstruct();
 	void TryAddLogger(FileOpener &opener);
 
@@ -190,8 +188,6 @@ public:
 
 	void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
 	int64_t Read(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
-	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
-	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 	bool CanSeek() override {
 		return true;
 	}
