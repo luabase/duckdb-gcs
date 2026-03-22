@@ -1,7 +1,9 @@
 #pragma once
 
 #include <google/cloud/storage/client.h>
+#ifdef GCS_ENABLE_GRPC
 #include <google/cloud/storage/grpc_plugin.h>
+#endif
 #include <google/cloud/storage/object_metadata.h>
 #include <google/cloud/storage/object_write_stream.h>
 #include <unordered_map>
@@ -65,6 +67,7 @@ public:
 	std::optional<gcs::ObjectMetadata> GetCachedMetadata(const std::string &bucket, const std::string &object_key);
 	void SetCachedMetadata(const std::string &bucket, const std::string &object_key,
 	                       const gcs::ObjectMetadata &metadata);
+	void InvalidateCachedMetadata(const std::string &bucket, const std::string &object_key);
 	std::optional<vector<OpenFileInfo>> GetCachedList(const std::string &bucket, const std::string &prefix);
 	void SetCachedList(const std::string &bucket, const std::string &prefix, const vector<OpenFileInfo> &results);
 
@@ -111,18 +114,37 @@ public:
 
 	bool PostConstruct();
 	void TryAddLogger(FileOpener &opener);
-	void Close() override;
+
+	void Close() override {
+		if (write_stream != nullptr) {
+			write_stream->Close();
+			auto metadata = write_stream->metadata();
+			if (!metadata) {
+				fprintf(stderr, "Failed to finalize write from GCS: %s", metadata.status().message().c_str());
+				fflush(stderr);
+			}
+			write_stream = nullptr;
+		}
+	}
+
+	~GCSFileHandle() override {
+		Close();
+	}
+
 	void InitializeWriteStream();
 
 	inline gcs::Client GetClient() {
 		return context->GetClient();
 	}
 
+	int64_t WriteInto(char *buffer, int64_t nr_bytes);
+
 	FileOpenFlags flags;
 
 	// File info
 	idx_t length;
 	timestamp_t last_modified;
+	std::int64_t generation = 0;
 
 	// Read buffer
 	duckdb::unique_ptr<data_t[]> read_buffer;
@@ -142,8 +164,7 @@ public:
 	// This prevents circular references since the context never holds references to handles.
 	shared_ptr<GCSContextState> context;
 
-	std::unique_ptr<gcs::ObjectWriteStream> write_stream;
-	idx_t total_written = 0;
+	std::unique_ptr<google::cloud::storage::ObjectWriteStream> write_stream = nullptr;
 };
 
 class GCSFileSystem : public FileSystem {
@@ -166,8 +187,6 @@ public:
 
 	void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
 	int64_t Read(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
-	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
-	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 	bool CanSeek() override {
 		return true;
 	}
@@ -180,6 +199,7 @@ public:
 	int64_t GetFileSize(FileHandle &handle) override;
 	timestamp_t GetLastModifiedTime(FileHandle &handle) override;
 	void Seek(FileHandle &handle, idx_t location) override;
+	idx_t SeekPosition(FileHandle &handle) override;
 	void Truncate(FileHandle &handle, int64_t new_size) override;
 	void FileSync(FileHandle &handle) override;
 	void RemoveFile(const string &filename, optional_ptr<FileOpener> opener = nullptr) override;
@@ -194,6 +214,8 @@ public:
 	bool FileExists(const std::string &filename, optional_ptr<FileOpener> opener = nullptr) override;
 	bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
 	void CreateDirectory(const string &directory, optional_ptr<FileOpener> opener = nullptr) override;
+	void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
+	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 
 protected:
 	unique_ptr<FileHandle> OpenFileExtended(const OpenFileInfo &info, FileOpenFlags flags,
@@ -206,6 +228,7 @@ protected:
 	duckdb::unique_ptr<GCSFileHandle> CreateHandle(const OpenFileInfo &info, FileOpenFlags flags,
 	                                               optional_ptr<FileOpener> opener);
 	void ReadRange(GCSFileHandle &handle, idx_t file_offset, char *buffer_out, idx_t buffer_out_len);
+	void ReadRangeInternal(GCSFileHandle &handle, idx_t file_offset, char *buffer_out, idx_t buffer_out_len);
 
 	const std::string &GetContextPrefix() const;
 	shared_ptr<GCSContextState> GetOrCreateStorageContext(optional_ptr<FileOpener> opener, const string &path,

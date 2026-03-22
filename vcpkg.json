@@ -2,15 +2,20 @@
   "dependencies": [
     {
       "name": "google-cloud-cpp",
-      "default-features": false,
-      "features": [ "storage", "storage-grpc" ]
+      "features": [ "storage" ],
+      "platform": "windows"
+    },
+    {
+      "name": "google-cloud-cpp",
+      "features": [ "storage", "storage-grpc" ],
+      "platform": "!windows"
     },
     "vcpkg-cmake"
   ],
+  "builtin-baseline": "ce613c41372b23b1f51333815feb3edd87ef8a8b",
   "vcpkg-configuration": {
     "overlay-ports": [
-      "./extension-ci-tools/vcpkg_ports",
-      "./vcpkg-overlays"
+      "./extension-ci-tools/vcpkg_ports"
     ]
   }
 }
