@@ -81,7 +81,11 @@ for arg in "$@"; do
             echo "Options:"
             echo "  --verbose, -v   Show full build output (default: progress lines only)"
             echo "  --no-upload     Build only, don't upload to GCS"
-            echo "  JOBS=N          Override parallel job count (default: auto-detect)"
+            echo "  JOBS=N          Override parallel job count for native builds (default: auto-detect)"
+            echo ""
+            echo "Environment:"
+            echo "  DOCKER_MAKE_JOBS   make -j inside Docker (default: 4 or JOBS if set). DuckDB+zstd is RAM-heavy;"
+            echo "                     increase on machines with more Docker memory, decrease if the linker/compiler is killed."
             echo ""
             echo "Host detected: $HOST_PLATFORM"
             exit 0
@@ -203,33 +207,50 @@ build_docker() {
 
     cd "$PROJECT_DIR"
 
+    # Manifest builtin-baseline must exist in the vcpkg git object database (git show <sha>:versions/baseline.json).
+    # A shallow clone of main alone does not contain arbitrary baseline commits.
+    VCPKG_MANIFEST_BASELINE="$(
+        python3 -c "import json; print(json.load(open('${PROJECT_DIR}/vcpkg.json'))['builtin-baseline'])"
+    )"
+
+    # Default 4: make -j\$(nproc) inside Docker often OOM-kills the compiler while building DuckDB (e.g. third_party/zstd).
+    local docker_make_jobs="${DOCKER_MAKE_JOBS:-${JOBS:-4}}"
+    log "Docker make parallelism: ${docker_make_jobs} (DOCKER_MAKE_JOBS or JOBS to override)"
+
     docker run --rm \
         --platform "$docker_platform" \
         -v "$PROJECT_DIR:/workspace" \
         -w /workspace \
         -e VCPKG_ROOT=/opt/vcpkg \
         -e VCPKG_TOOLCHAIN_PATH=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
+        -e VCPKG_PIN="${VCPKG_MANIFEST_BASELINE}" \
+        -e DOCKER_MAKE_JOBS="${docker_make_jobs}" \
         "$DOCKER_IMAGE" \
-        bash -c '
+        bash -c "
             set -e
-            echo "=== Installing build dependencies ==="
+            echo \"=== Installing build dependencies ===\"
             apt-get update -qq
             apt-get install -y -qq build-essential cmake git curl zip unzip tar pkg-config ninja-build python3 > /dev/null 2>&1
 
-            echo "=== Setting up vcpkg ==="
-            if [ ! -d /opt/vcpkg ]; then
-                git clone --depth 1 https://github.com/microsoft/vcpkg.git /opt/vcpkg
-                /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics > /dev/null 2>&1
-            fi
+            echo \"=== Setting up vcpkg (commit \$VCPKG_PIN) ===\"
+            rm -rf /opt/vcpkg
+            mkdir -p /opt/vcpkg
+            git -C /opt/vcpkg init
+            git -C /opt/vcpkg remote add origin https://github.com/microsoft/vcpkg.git
+            git -C /opt/vcpkg fetch --depth 1 origin \"\$VCPKG_PIN\"
+            git -C /opt/vcpkg checkout -q FETCH_HEAD
+            /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics > /dev/null 2>&1
 
-            echo "=== Cleaning build directory ==="
+            echo \"=== Cleaning build directory ===\"
             rm -rf build/release
 
-            echo "=== Building ==="
-            make -j$(nproc)
+            echo \"=== Building ===\"
+            export VCPKG_MAX_CONCURRENCY=\"\${VCPKG_MAX_CONCURRENCY:-4}\"
+            export CMAKE_BUILD_PARALLEL_LEVEL=\"\${DOCKER_MAKE_JOBS}\"
+            make -j\"\${DOCKER_MAKE_JOBS}\"
 
-            echo "=== Done ==="
-        ' 2>&1 | build_filter
+            echo \"=== Done ===\"
+        " 2>&1 | build_filter
 
     local ext="build/release/extension/$EXTENSION_NAME/$EXTENSION_NAME.duckdb_extension"
     mkdir -p "$OUTPUT_DIR/$target_platform"
