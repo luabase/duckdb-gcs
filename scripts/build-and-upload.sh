@@ -15,10 +15,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-DUCKDB_VERSION="v1.5.1"
+DUCKDB_VERSION="v1.5.2"
 GCS_BUCKET="def-duckdb-extensions"
 EXTENSION_NAME="gcs"
 DOCKER_IMAGE="ubuntu:22.04"
+
+# vcpkg commit pinned in the project's vcpkg.json builtin-baseline
+VCPKG_PIN="ce613c41372b23b1f51333815feb3edd87ef8a8b"
 
 # Colors
 RED='\033[0;31m'
@@ -65,15 +68,17 @@ HOST_PLATFORM="$(detect_host_platform)"
 # Parse arguments
 # ---------------------------------------------------------------------------
 DO_UPLOAD=true
+UPLOAD_ONLY=false
 VERBOSE=false
 PLATFORMS=()
 
 for arg in "$@"; do
     case "$arg" in
         --no-upload) DO_UPLOAD=false ;;
+        --upload-only) UPLOAD_ONLY=true ;;
         --verbose|-v) VERBOSE=true ;;
         --help|-h)
-            echo "Usage: $0 [--no-upload] [--verbose|-v] [platform ...]"
+            echo "Usage: $0 [--no-upload] [--upload-only] [--verbose|-v] [platform ...]"
             echo ""
             echo "Platforms: osx_arm64  osx_amd64  linux_amd64  linux_arm64"
             echo "If no platform is specified, all four are built."
@@ -81,9 +86,11 @@ for arg in "$@"; do
             echo "Options:"
             echo "  --verbose, -v   Show full build output (default: progress lines only)"
             echo "  --no-upload     Build only, don't upload to GCS"
+            echo "  --upload-only   Skip building, upload existing dist/ artifacts to GCS"
             echo "  JOBS=N          Override parallel job count for native builds (default: auto-detect)"
             echo ""
             echo "Environment:"
+            echo "  VCPKG_ROOT or VCPKG_TOOLCHAIN_PATH   Required for native builds (auto-bootstrapped if absent)"
             echo "  DOCKER_MAKE_JOBS   make -j inside Docker (default: 4 or JOBS if set). DuckDB+zstd is RAM-heavy;"
             echo "                     increase on machines with more Docker memory, decrease if the linker/compiler is killed."
             echo ""
@@ -151,9 +158,20 @@ ensure_vcpkg() {
     if [ -z "${VCPKG_TOOLCHAIN_PATH:-}" ]; then
         if [ -n "${VCPKG_ROOT:-}" ]; then
             export VCPKG_TOOLCHAIN_PATH="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+        elif [ -f "$PROJECT_DIR/vcpkg/scripts/buildsystems/vcpkg.cmake" ]; then
+            export VCPKG_TOOLCHAIN_PATH="$PROJECT_DIR/vcpkg/scripts/buildsystems/vcpkg.cmake"
+            log "Using bundled vcpkg at $VCPKG_TOOLCHAIN_PATH"
         else
-            err "VCPKG_ROOT or VCPKG_TOOLCHAIN_PATH must be set for native builds"
-            return 1
+            log "vcpkg not found — bootstrapping into $PROJECT_DIR/vcpkg (commit $VCPKG_PIN)"
+            rm -rf "$PROJECT_DIR/vcpkg"
+            mkdir -p "$PROJECT_DIR/vcpkg"
+            git -C "$PROJECT_DIR/vcpkg" init -q
+            git -C "$PROJECT_DIR/vcpkg" remote add origin https://github.com/microsoft/vcpkg.git
+            git -C "$PROJECT_DIR/vcpkg" fetch --depth 1 origin "$VCPKG_PIN"
+            git -C "$PROJECT_DIR/vcpkg" checkout -q FETCH_HEAD
+            "$PROJECT_DIR/vcpkg/bootstrap-vcpkg.sh" -disableMetrics > /dev/null
+            export VCPKG_TOOLCHAIN_PATH="$PROJECT_DIR/vcpkg/scripts/buildsystems/vcpkg.cmake"
+            ok "vcpkg bootstrapped at $VCPKG_TOOLCHAIN_PATH"
         fi
     fi
 }
@@ -167,7 +185,7 @@ build_native() {
 
     cd "$PROJECT_DIR"
     rm -rf build/release
-    ensure_vcpkg
+    ensure_vcpkg || return 1
 
     local make_env=""
     if [ "$HOST_PLATFORM" = "osx_arm64" ] && [ "$target_platform" = "osx_amd64" ]; then
@@ -178,7 +196,7 @@ build_native() {
         make_env="OSX_BUILD_ARCH=arm64 VCPKG_TARGET_TRIPLET=arm64-osx-release VCPKG_HOST_TRIPLET=x64-osx-release"
     fi
 
-    eval "$make_env make -j$(nproc_portable)" 2>&1 | build_filter
+    eval "VCPKG_TOOLCHAIN_PATH='$VCPKG_TOOLCHAIN_PATH' $make_env make GEN=ninja -j$(nproc_portable)" 2>&1 | build_filter
 
     local ext="build/release/extension/$EXTENSION_NAME/$EXTENSION_NAME.duckdb_extension"
     mkdir -p "$OUTPUT_DIR/$target_platform"
@@ -207,13 +225,6 @@ build_docker() {
 
     cd "$PROJECT_DIR"
 
-    # Manifest builtin-baseline must exist in the vcpkg git object database (git show <sha>:versions/baseline.json).
-    # A shallow clone of main alone does not contain arbitrary baseline commits.
-    VCPKG_MANIFEST_BASELINE="$(
-        python3 -c "import json; print(json.load(open('${PROJECT_DIR}/vcpkg.json'))['builtin-baseline'])"
-    )"
-
-    # Default 4: make -j\$(nproc) inside Docker often OOM-kills the compiler while building DuckDB (e.g. third_party/zstd).
     local docker_make_jobs="${DOCKER_MAKE_JOBS:-${JOBS:-4}}"
     log "Docker make parallelism: ${docker_make_jobs} (DOCKER_MAKE_JOBS or JOBS to override)"
 
@@ -221,9 +232,7 @@ build_docker() {
         --platform "$docker_platform" \
         -v "$PROJECT_DIR:/workspace" \
         -w /workspace \
-        -e VCPKG_ROOT=/opt/vcpkg \
-        -e VCPKG_TOOLCHAIN_PATH=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake \
-        -e VCPKG_PIN="${VCPKG_MANIFEST_BASELINE}" \
+        -e VCPKG_PIN="${VCPKG_PIN}" \
         -e DOCKER_MAKE_JOBS="${docker_make_jobs}" \
         "$DOCKER_IMAGE" \
         bash -c "
@@ -245,9 +254,10 @@ build_docker() {
             rm -rf build/release
 
             echo \"=== Building ===\"
+            export VCPKG_TOOLCHAIN_PATH=/opt/vcpkg/scripts/buildsystems/vcpkg.cmake
             export VCPKG_MAX_CONCURRENCY=\"\${VCPKG_MAX_CONCURRENCY:-4}\"
             export CMAKE_BUILD_PARALLEL_LEVEL=\"\${DOCKER_MAKE_JOBS}\"
-            make -j\"\${DOCKER_MAKE_JOBS}\"
+            make GEN=ninja -j\"\${DOCKER_MAKE_JOBS}\"
 
             echo \"=== Done ===\"
         " 2>&1 | build_filter
@@ -293,12 +303,11 @@ build_platform() {
 upload_to_gcs() {
     log "Uploading to gs://$GCS_BUCKET/..."
 
-    if ! command -v gsutil &>/dev/null; then
-        err "gsutil is required for upload. Install Google Cloud SDK."
+    if ! command -v gcloud &>/dev/null; then
+        err "gcloud is required for upload. Install Google Cloud SDK."
         return 1
     fi
 
-    # Show what we're uploading
     echo ""
     log "Repository structure:"
     find "$OUTPUT_DIR" -name "*.gz" -type f | sort | while read -r f; do
@@ -306,8 +315,8 @@ upload_to_gcs() {
     done
     echo ""
 
-    gsutil -m rsync -r -x '\.DS_Store$|\.keep$' "$PROJECT_DIR/dist/" "gs://$GCS_BUCKET/"
-    gsutil iam ch allUsers:objectViewer "gs://$GCS_BUCKET"
+    gcloud storage rsync -r --exclude='\.DS_Store$|\.keep$' "$PROJECT_DIR/dist/" "gs://$GCS_BUCKET/"
+    gcloud storage buckets add-iam-policy-binding "gs://$GCS_BUCKET" --member=allUsers --role=roles/storage.objectViewer
 
     ok "Upload complete!"
     echo ""
@@ -324,9 +333,17 @@ echo ""
 log "DuckDB GCS Extension Builder"
 log "DuckDB version: $DUCKDB_VERSION"
 log "Host platform:  $HOST_PLATFORM"
-log "Platforms:      ${PLATFORMS[*]}"
+log "Upload only:    $UPLOAD_ONLY"
+if ! $UPLOAD_ONLY; then
+    log "Platforms:      ${PLATFORMS[*]}"
+fi
 log "Upload:         $DO_UPLOAD"
 echo ""
+
+if $UPLOAD_ONLY; then
+    upload_to_gcs
+    exit 0
+fi
 
 FAILED=()
 
@@ -352,7 +369,6 @@ if [ ${#FAILED[@]} -gt 0 ]; then
     warn "Failed platforms: ${FAILED[*]}"
 fi
 
-# Upload successful builds
 if $DO_UPLOAD; then
     echo ""
     upload_to_gcs

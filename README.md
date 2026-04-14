@@ -284,7 +284,7 @@ If you prefer to build and upload manually:
 make release
 
 # Organize into repository structure
-./scripts/organize_repository.sh v1.0.0 v1.5.1
+./scripts/organize_repository.sh v1.0.0 v1.5.2
 
 # Upload to your hosting (S3, GCS, etc.)
 aws s3 sync repository/ s3://your-bucket/ --acl public-read
