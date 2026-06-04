@@ -15,7 +15,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-DUCKDB_VERSION="v1.5.0"
+DUCKDB_VERSION="v1.5.3"
 GCS_BUCKET="def-duckdb-extensions"
 EXTENSION_NAME="gcs"
 DOCKER_IMAGE="ubuntu:22.04"
