@@ -84,6 +84,7 @@ for arg in "$@"; do
             echo "  JOBS=N          Override parallel job count for native builds (default: auto-detect)"
             echo ""
             echo "Environment:"
+            echo "  VCPKG_ROOT         vcpkg install dir (auto-detected: ./vcpkg, ~/vcpkg, ~/dev/vcpkg)"
             echo "  DOCKER_MAKE_JOBS   make -j inside Docker (default: 4 or JOBS if set). DuckDB+zstd is RAM-heavy;"
             echo "                     increase on machines with more Docker memory, decrease if the linker/compiler is killed."
             echo ""
@@ -147,15 +148,49 @@ compress_extension() {
     fi
 }
 
-ensure_vcpkg() {
-    if [ -z "${VCPKG_TOOLCHAIN_PATH:-}" ]; then
-        if [ -n "${VCPKG_ROOT:-}" ]; then
-            export VCPKG_TOOLCHAIN_PATH="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
-        else
-            err "VCPKG_ROOT or VCPKG_TOOLCHAIN_PATH must be set for native builds"
-            return 1
+vcpkg_is_valid() {
+    local root="$1"
+    [ -n "$root" ] && [ -f "$root/scripts/buildsystems/vcpkg.cmake" ]
+}
+
+detect_vcpkg_root() {
+    local candidate
+    if vcpkg_is_valid "${VCPKG_ROOT:-}"; then
+        echo "$VCPKG_ROOT"
+        return 0
+    fi
+    if [ -n "${VCPKG_TOOLCHAIN_PATH:-}" ]; then
+        candidate="$(cd "$(dirname "$VCPKG_TOOLCHAIN_PATH")/.." && pwd)"
+        if vcpkg_is_valid "$candidate"; then
+            echo "$candidate"
+            return 0
         fi
     fi
+    for candidate in \
+        "$PROJECT_DIR/vcpkg" \
+        "$PROJECT_DIR/../vcpkg" \
+        "${HOME}/vcpkg" \
+        "${HOME}/dev/vcpkg"; do
+        if vcpkg_is_valid "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+ensure_vcpkg() {
+    local root
+    if ! root="$(detect_vcpkg_root)"; then
+        err "vcpkg not found. Install it in the repo or set VCPKG_ROOT:"
+        err "  git clone https://github.com/microsoft/vcpkg.git $PROJECT_DIR/vcpkg"
+        err "  $PROJECT_DIR/vcpkg/bootstrap-vcpkg.sh"
+        err "  export VCPKG_ROOT=$PROJECT_DIR/vcpkg"
+        return 1
+    fi
+    export VCPKG_ROOT="$root"
+    export VCPKG_TOOLCHAIN_PATH="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+    log "Using vcpkg: $VCPKG_ROOT"
 }
 
 # ---------------------------------------------------------------------------
@@ -167,17 +202,18 @@ build_native() {
 
     cd "$PROJECT_DIR"
     rm -rf build/release
-    ensure_vcpkg
+    ensure_vcpkg || return 1
 
-    local make_env=""
+    local make_env="VCPKG_ROOT='$VCPKG_ROOT' VCPKG_TOOLCHAIN_PATH='$VCPKG_TOOLCHAIN_PATH'"
     if [ "$HOST_PLATFORM" = "osx_arm64" ] && [ "$target_platform" = "osx_amd64" ]; then
         log "Cross-compiling: arm64 host -> x86_64 target"
-        make_env="OSX_BUILD_ARCH=x86_64 VCPKG_TARGET_TRIPLET=x64-osx-release VCPKG_HOST_TRIPLET=arm64-osx-release"
+        make_env="$make_env OSX_BUILD_ARCH=x86_64 VCPKG_TARGET_TRIPLET=x64-osx-release VCPKG_HOST_TRIPLET=arm64-osx-release"
     elif [ "$HOST_PLATFORM" = "osx_amd64" ] && [ "$target_platform" = "osx_arm64" ]; then
         log "Cross-compiling: x86_64 host -> arm64 target"
-        make_env="OSX_BUILD_ARCH=arm64 VCPKG_TARGET_TRIPLET=arm64-osx-release VCPKG_HOST_TRIPLET=x64-osx-release"
+        make_env="$make_env OSX_BUILD_ARCH=arm64 VCPKG_TARGET_TRIPLET=arm64-osx-release VCPKG_HOST_TRIPLET=x64-osx-release"
     fi
 
+    # shellcheck disable=SC2086
     eval "$make_env make -j$(nproc_portable)" 2>&1 | build_filter
 
     local ext="build/release/extension/$EXTENSION_NAME/$EXTENSION_NAME.duckdb_extension"
