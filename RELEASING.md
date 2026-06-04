@@ -103,7 +103,7 @@ This project follows [Semantic Versioning](https://semver.org/):
 
 ## DuckDB Version Compatibility
 
-Each release is built against a specific DuckDB version (currently v1.5.1).
+Each release is built against a specific DuckDB version (currently v1.5.3).
 
 If you need to support multiple DuckDB versions:
 
@@ -114,7 +114,7 @@ If you need to support multiple DuckDB versions:
 Example structure:
 ```
 v1.0.0/
-├── duckdb-v1.5.1/
+├── duckdb-v1.5.3/
 │   ├── linux_amd64/
 │   └── osx_arm64/
 └── duckdb-v1.6.0/
@@ -134,11 +134,11 @@ Use the GitHub Actions artifacts or build locally for each platform.
 
 ```bash
 # Use the provided script
-./scripts/organize_repository.sh v1.0.0 v1.5.1
+./scripts/organize_repository.sh v1.0.0 v1.5.3
 
 # This creates:
 repository/
-└── v1.5.1/
+└── v1.5.3/
     ├── linux_amd64/
     │   └── gcs.duckdb_extension.gz
     ├── linux_arm64/
@@ -189,7 +189,7 @@ LOAD gcs;
 
 ### Extension Won't Load
 
-1. Verify DuckDB version matches (extension is for v1.5.1)
+1. Verify DuckDB version matches (extension is for v1.5.3)
 2. Check platform architecture matches
 3. Ensure `-unsigned` flag is used
 4. Check file isn't corrupted (re-download)

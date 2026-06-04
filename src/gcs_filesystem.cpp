@@ -197,7 +197,6 @@ GCSFileHandle::GCSFileHandle(GCSFileSystem &fs, const OpenFileInfo &info, FileOp
     : FileHandle(fs, info.path, flags), flags(flags), length(0), last_modified(0), buffer_available(0), buffer_idx(0),
       file_offset(0), buffer_start(0), buffer_end(0), read_options(read_options), bucket(bucket),
       object_key(object_key), context(std::move(context)) {
-
 	if (!flags.RequireParallelAccess() && !flags.OpenForWriting()) {
 		read_buffer = duckdb::unique_ptr<data_t[]>(new data_t[read_options.buffer_size]);
 	}
@@ -205,17 +204,6 @@ GCSFileHandle::GCSFileHandle(GCSFileSystem &fs, const OpenFileInfo &info, FileOp
 
 bool GCSFileHandle::PostConstruct() {
 	return true;
-}
-
-void GCSFileHandle::InitializeWriteStream() {
-	if (write_stream) {
-		return;
-	}
-	auto client = context->GetClient();
-	write_stream = std::make_unique<gcs::ObjectWriteStream>(client.WriteObject(bucket, object_key));
-	if (!write_stream->IsOpen()) {
-		throw IOException("Failed to open GCS write stream for gs://%s/%s", bucket, object_key);
-	}
 }
 
 void GCSFileHandle::TryAddLogger(FileOpener &opener) {
@@ -359,7 +347,6 @@ int64_t GCSFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes) 
 
 	nr_bytes = MinValue<int64_t>(max_read, nr_bytes);
 	Read(handle, buffer, nr_bytes, gcp_handle.file_offset);
-	gcp_handle.file_offset += nr_bytes;
 	return nr_bytes;
 }
 
@@ -383,32 +370,13 @@ idx_t GCSFileSystem::SeekPosition(FileHandle &handle) {
 	return gcp_handle.file_offset;
 }
 
-void GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
-	auto &gsfh = handle.Cast<GCSFileHandle>();
-	auto write_buffer = char_ptr_cast(buffer);
-	if (location != gsfh.file_offset) {
-		throw IOException("GCS does not support random writes (requested offset: %llu, current offset: %llu)", location,
-		                  gsfh.file_offset);
-	}
-	gsfh.WriteInto(write_buffer, nr_bytes);
-}
-
-int64_t GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes) {
-	auto &gsfh = handle.Cast<GCSFileHandle>();
-	auto write_buffer = char_ptr_cast(buffer);
-	return gsfh.WriteInto(write_buffer, nr_bytes);
-	return nr_bytes;
-}
-
 void GCSFileSystem::Truncate(FileHandle &handle, int64_t new_size) {
 	auto &gsfh = handle.Cast<GCSFileHandle>();
 
-	// GCS doesn't support in-place truncation.
 	if (static_cast<idx_t>(new_size) == gsfh.file_offset) {
 		return;
 	}
 
-	// Truncating to 0 is allowed before any writes have happened (reset)
 	if (new_size == 0 && gsfh.file_offset == 0) {
 		return;
 	}
@@ -969,6 +937,22 @@ void GCSFileSystem::LoadRemoteFileInfo(GCSFileHandle &handle) {
 	auto time_point = object_metadata->updated();
 	auto duration = time_point.time_since_epoch();
 	handle.last_modified = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+}
+
+void GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
+	auto &gsfh = handle.Cast<GCSFileHandle>();
+	auto write_buffer = char_ptr_cast(buffer);
+	if (location != gsfh.file_offset) {
+		throw IOException("GCS does not support random writes (requested offset: %llu, current offset: %llu)", location,
+		                  gsfh.file_offset);
+	}
+	gsfh.WriteInto(write_buffer, nr_bytes);
+}
+
+int64_t GCSFileSystem::Write(FileHandle &handle, void *buffer, int64_t nr_bytes) {
+	auto &gsfh = handle.Cast<GCSFileHandle>();
+	auto write_buffer = char_ptr_cast(buffer);
+	return gsfh.WriteInto(write_buffer, nr_bytes);
 }
 
 } // namespace duckdb

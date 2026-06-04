@@ -5,7 +5,6 @@
 #include <google/cloud/storage/grpc_plugin.h>
 #endif
 #include <google/cloud/storage/object_metadata.h>
-#include <google/cloud/storage/object_write_stream.h>
 #include <unordered_map>
 #include <mutex>
 #include <chrono>
@@ -102,7 +101,6 @@ private:
 	std::mutex cache_mutex;
 	std::unordered_map<std::string, MetadataCacheEntry> metadata_cache;
 	std::unordered_map<std::string, ListCacheEntry> list_cache;
-
 	void EvictLRUMetadataEntryLocked();
 	void EvictLRUListEntryLocked();
 };
@@ -122,6 +120,10 @@ public:
 			if (!metadata) {
 				fprintf(stderr, "Failed to finalize write from GCS: %s", metadata.status().message().c_str());
 				fflush(stderr);
+			} else {
+				// Update the cache with the new metadata so subsequent reads
+				// use the correct generation instead of a stale one.
+				context->SetCachedMetadata(bucket, object_key, *metadata);
 			}
 			write_stream = nullptr;
 		}
@@ -130,8 +132,6 @@ public:
 	~GCSFileHandle() override {
 		Close();
 	}
-
-	void InitializeWriteStream();
 
 	inline gcs::Client GetClient() {
 		return context->GetClient();
@@ -164,7 +164,8 @@ public:
 	// This prevents circular references since the context never holds references to handles.
 	shared_ptr<GCSContextState> context;
 
-	std::unique_ptr<google::cloud::storage::ObjectWriteStream> write_stream = nullptr;
+private:
+	unique_ptr<google::cloud::storage::ObjectWriteStream> write_stream = nullptr;
 };
 
 class GCSFileSystem : public FileSystem {
